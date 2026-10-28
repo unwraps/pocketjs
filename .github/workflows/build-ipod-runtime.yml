@@ -12,8 +12,12 @@ permissions:
 
 jobs:
   build-native:
-    name: Build ARMv6 PocketJSDemo.app
-    runs-on: macos-14
+    name: Build ARMv6 PocketJSDemo.app (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
@@ -52,16 +56,17 @@ jobs:
           mkdir -p "$SYSROOT_RAW_DIR" "$SYSROOT_DIR" "$BOOTSTRAP_DIR"
 
           echo "=== 1. Finding Legacy-iOS-Kit tools ==="
-          DMG_TOOL="$LEGACY_KIT_DIR/bin/macos/arm64/dmg"
-          if [ ! -f "$DMG_TOOL" ]; then
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ] && [ -f "$LEGACY_KIT_DIR/bin/macos/arm64/dmg" ]; then
+            DMG_TOOL="$LEGACY_KIT_DIR/bin/macos/arm64/dmg"
+            HFSPLUS_TOOL="$LEGACY_KIT_DIR/bin/macos/arm64/hfsplus"
+            export DYLD_LIBRARY_PATH="$LEGACY_KIT_DIR/bin/macos/arm64/lib:$LEGACY_KIT_DIR/bin/macos/lib:${DYLD_LIBRARY_PATH:-}"
+          else
             DMG_TOOL="$LEGACY_KIT_DIR/bin/macos/dmg"
-          fi
-          HFSPLUS_TOOL="$LEGACY_KIT_DIR/bin/macos/arm64/hfsplus"
-          if [ ! -f "$HFSPLUS_TOOL" ]; then
             HFSPLUS_TOOL="$LEGACY_KIT_DIR/bin/macos/hfsplus"
+            export DYLD_LIBRARY_PATH="$LEGACY_KIT_DIR/bin/macos/lib:${DYLD_LIBRARY_PATH:-}"
           fi
           chmod +x "$DMG_TOOL" "$HFSPLUS_TOOL"
-          export DYLD_LIBRARY_PATH="$LEGACY_KIT_DIR/bin/macos/arm64/lib:$LEGACY_KIT_DIR/bin/macos/lib:${DYLD_LIBRARY_PATH:-}"
 
           echo "=== 2. Downloading iPhone OS 1.1.4 IPSW ==="
           IPSW_PATH="$DOWNLOADS_DIR/iPhone1,1_1.1.4_4A102_Restore.ipsw"
@@ -155,6 +160,6 @@ jobs:
       - name: Upload PocketJSDemo.app archive
         uses: actions/upload-artifact@v4
         with:
-          name: PocketJSDemo.app
+          name: PocketJSDemo.app-${{ matrix.os }}
           path: PocketJSDemo.app.tar.gz
           if-no-files-found: error
