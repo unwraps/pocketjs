@@ -8,13 +8,16 @@ import {
 import { dirname, resolve, sep } from "node:path";
 import ts from "typescript";
 import type { PocketFramework } from "../../contracts/spec/pocket-manifest.ts";
-import { POCKET_FRAMEWORKS, SUBPATHS } from "./subpaths.ts";
+import { POCKET_FRAMEWORKS, SUBPATHS, resolvesIn } from "./subpaths.ts";
+import type { PocketDomain } from "../../contracts/spec/worker.ts";
 
 export interface AppCheckOptions {
   entry: string;
   /** Resolve PocketJS imports against the same compiler checkout as bundling. */
   frameworkRoot?: string;
   framework?: PocketFramework;
+  /** The entry's execution domain; its bundle resolves only that domain's subpaths. Default ui. */
+  domain?: PocketDomain;
   /** Optional app tsconfig whose compiler options/path mappings are inherited. */
   tsconfigPath?: string;
   /** Framework/app ambient declarations required by the reachable source graph. */
@@ -139,7 +142,7 @@ export function checkAppTypes(options: AppCheckOptions): AppCheckResult {
         );
     if (parsed) configDiagnostics.push(...parsed.errors);
     if (parsed && options.frameworkRoot) {
-      parsed.options.paths = { ...parsed.options.paths, ...frameworkPaths(resolve(options.frameworkRoot), options.framework) };
+      parsed.options.paths = { ...parsed.options.paths, ...frameworkPaths(resolve(options.frameworkRoot), options.framework, options.domain) };
       // Preserve a runnable debug config, including inherited aliases whose
       // relative paths belong to the parent config rather than this directory.
       const pathBase = parsed.options.baseUrl ??
@@ -190,6 +193,8 @@ export interface ProjectCheckOptions {
   frameworkRoot: string;
   /** The framework the project's manifest names. Default solid. */
   framework?: PocketFramework;
+  /** The entry's execution domain. Default ui. */
+  domain?: PocketDomain;
 }
 
 const PACKAGE = "@pocketjs/framework";
@@ -200,7 +205,7 @@ const PACKAGE = "@pocketjs/framework";
  * framework's prefixed form. A subpath a framework does not resolve is left
  * out, so importing it is the same error here as in the build.
  */
-export function frameworkPaths(frameworkRoot: string, framework: PocketFramework = "solid"): Record<string, string[]> {
+export function frameworkPaths(frameworkRoot: string, framework: PocketFramework = "solid", domain: PocketDomain = "ui"): Record<string, string[]> {
   const paths: Record<string, string[]> = {};
   const fileOf = (name: string, fw: PocketFramework): string | undefined => {
     const decl = SUBPATHS[name];
@@ -208,10 +213,15 @@ export function frameworkPaths(frameworkRoot: string, framework: PocketFramework
     return rel === undefined ? undefined : resolve(frameworkRoot, rel);
   };
   for (const name of Object.keys(SUBPATHS)) {
-    const bare = fileOf(name, framework);
+    // A subpath another domain owns maps to a non-module declaration, so the
+    // check reports "not a module" instead of resolving the source through an
+    // inherited mapping or the package's own exports.
+    const outside = resolvesIn(SUBPATHS[name], domain) ? undefined
+      : resolve(frameworkRoot, "framework/compiler/not-in-domain.d.ts");
+    const bare = outside ?? fileOf(name, framework);
     if (bare) paths[name ? `${PACKAGE}/${name}` : PACKAGE] = [bare];
     for (const fw of POCKET_FRAMEWORKS) {
-      const prefixed = fileOf(name, fw);
+      const prefixed = outside ?? fileOf(name, fw);
       if (prefixed) paths[name ? `${PACKAGE}/${fw}/${name}` : `${PACKAGE}/${fw}`] = [prefixed];
     }
   }
@@ -247,7 +257,7 @@ export function checkProjectTypes(options: ProjectCheckOptions): AppCheckResult 
       allowImportingTsExtensions: true,
       skipLibCheck: true,
       baseUrl: root,
-      paths: { ...frameworkPaths(root, options.framework), "*": [resolve(root, "node_modules/*")] },
+      paths: { ...frameworkPaths(root, options.framework, options.domain), "*": [resolve(root, "node_modules/*")] },
     },
   };
   const tsconfig = JSON.stringify(config, null, 2) + "\n";
