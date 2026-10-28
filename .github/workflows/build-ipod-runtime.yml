@@ -123,21 +123,29 @@ jobs:
             "Foundation"
             "CoreGraphics"
             "CoreFoundation"
-            "OpenGLES"
-            "AudioToolbox"
-            "AudioUnit"
-            "CoreAudio"
             "IOKit"
             "Security"
             "SystemConfiguration"
             "CFNetwork"
+            "OpenGLES"
+            "AudioToolbox"
+            "AudioUnit"
+            "CoreAudio"
             "AddressBook"
             "GraphicsServices"
           )
           for FW in "${FRAMEWORKS[@]}"; do
-            mkdir -p "$SYSROOT_DIR/System/Library/Frameworks/$FW.framework"
-            (cd "$SYSROOT_DIR/System/Library/Frameworks/$FW.framework" && \
-              "$HFSPLUS_TOOL" "$RAW_ROOTFS" extract "System/Library/Frameworks/$FW.framework/$FW" || true)
+            FW_DIR="$SYSROOT_DIR/System/Library/Frameworks/$FW.framework"
+            mkdir -p "$FW_DIR/Versions/A"
+            (cd "$FW_DIR" && \
+              "$HFSPLUS_TOOL" "$RAW_ROOTFS" extract "System/Library/Frameworks/$FW.framework/$FW" || \
+              "$HFSPLUS_TOOL" "$RAW_ROOTFS" extract "System/Library/Frameworks/$FW.framework/Versions/A/$FW" || true)
+            if [ -f "$FW_DIR/$FW" ]; then
+              cp "$FW_DIR/$FW" "$FW_DIR/Versions/A/$FW" 2>/dev/null || true
+            elif [ -f "$FW_DIR/Versions/A/$FW" ]; then
+              cp "$FW_DIR/Versions/A/$FW" "$FW_DIR/$FW" 2>/dev/null || true
+            fi
+            (cd "$FW_DIR/Versions" && ln -sf A Current 2>/dev/null || true)
           done
 
           echo "=== 7. Downloading bootstrap debs ==="
