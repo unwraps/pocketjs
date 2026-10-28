@@ -100,6 +100,7 @@ jobs:
           LIBS=(
             "libSystem.B.dylib"
             "libgcc_s.1.dylib"
+            "libgcc_s_v6.1.dylib"
             "libobjc.A.dylib"
             "libz.1.dylib"
             "libsqlite3.0.dylib"
@@ -113,9 +114,15 @@ jobs:
           done
 
           cd "$SYSROOT_DIR/usr/lib"
+          if [ ! -f "libgcc_s_v6.1.dylib" ]; then
+            ln -sf libgcc_s.1.dylib libgcc_s_v6.1.dylib || true
+          fi
+          ln -sf libgcc_s_v6.1.dylib libgcc_s_v6.dylib || true
+          ln -sf libgcc_s.1.dylib libgcc_s.dylib || true
+          ln -sf libgcc_s.1.dylib libgcc_s.10.4.dylib || true
+          ln -sf libgcc_s.1.dylib libgcc_s.10.5.dylib || true
           ln -sf libSystem.B.dylib libSystem.dylib || true
           ln -sf libobjc.A.dylib libobjc.dylib || true
-          ln -sf libgcc_s.1.dylib libgcc_s.dylib || true
           ln -sf libz.1.dylib libz.dylib || true
 
           FRAMEWORKS=(
