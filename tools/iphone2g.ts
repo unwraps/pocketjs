@@ -481,6 +481,8 @@ export function buildIPhone2GNative(application: RuntimeApplication, outdir: str
       `-DPOCKET_LOGICAL_HEIGHT=${hostInputs.viewport.logical[1]}`,
       "-I",
       join(repository, "programs/native/quickjs"),
+      "-I",
+      join(repository, "contracts/generated"),
       "-Wno-cast-function-type-mismatch",
     ],
   );
