@@ -1,0 +1,143 @@
+name: Build iPod / iPhone 2G Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'build-ipod*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-native:
+    name: Build ARMv6 PocketJSDemo.app
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install macOS host tools
+        run: |
+          brew install ldid openssl@3 pkg-config
+
+      - name: Install Rust nightly toolchain
+        run: |
+          rustup toolchain install nightly-2026-07-02 --profile minimal --component rust-src
+          rustup default nightly-2026-07-02
+
+      - name: Install Bun dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Setup PocketJS sources (Csu, QuickJS, Legacy-iOS-Kit)
+        run: bun iphone2g setup-sources
+
+      - name: Prepare 1.1.4 sysroot from IPSW
+        run: |
+          set -euo pipefail
+          CACHE_ROOT="$HOME/.cache/pocket-nexus/iphone2g"
+          SYSROOT_RAW_DIR="$CACHE_ROOT/sysroot-1.1.4"
+          SYSROOT_DIR="$SYSROOT_RAW_DIR/rootfs"
+          DOWNLOADS_DIR="$CACHE_ROOT/downloads"
+          BOOTSTRAP_DIR="$DOWNLOADS_DIR/bootstrap"
+
+          mkdir -p "$SYSROOT_RAW_DIR" "$SYSROOT_DIR" "$BOOTSTRAP_DIR"
+
+          echo "=== 1. Building vfdecrypt ==="
+          git clone --depth 1 https://github.com/malus-security/vfdecrypt.git /tmp/vfdecrypt-src
+          OPENSSL_PREFIX=$(brew --prefix openssl@3)
+          clang -O2 -DMAC_OSX \
+            -I"$OPENSSL_PREFIX/include" \
+            -L"$OPENSSL_PREFIX/lib" \
+            /tmp/vfdecrypt-src/vfdecrypt.c \
+            -lcrypto -lssl \
+            -o /tmp/vfdecrypt
+
+          echo "=== 2. Downloading iPhone OS 1.1.4 IPSW ==="
+          IPSW_PATH="$DOWNLOADS_DIR/iPhone1,1_1.1.4_4A102_Restore.ipsw"
+          if [ ! -f "$IPSW_PATH" ]; then
+            curl -fL --retry 3 -o "$IPSW_PATH" \
+              "https://secure-appldnld.apple.com/iPhone/061-4313.20080226.Sw39i/iPhone1%2C1_1.1.4_4A102_Restore.ipsw"
+          fi
+
+          echo "=== 3. Extracting 022-3894-4.dmg ==="
+          unzip -p "$IPSW_PATH" "022-3894-4.dmg" > /tmp/022-3894-4.dmg
+
+          echo "=== 4. Decrypting rootfs ==="
+          RAW_ROOTFS="$SYSROOT_RAW_DIR/iPhoneOS-1.1.4-rootfs.raw"
+          /tmp/vfdecrypt -i /tmp/022-3894-4.dmg \
+            -k d0a0c0977bd4b6350b256d6650ec9eca419b6f961f593e74b7e5b93e010b698ca6cca1fe \
+            -o "$RAW_ROOTFS"
+          rm -f /tmp/022-3894-4.dmg
+
+          echo "=== 5. Verifying raw rootfs SHA-256 ==="
+          ACTUAL_SHA=$(shasum -a 256 "$RAW_ROOTFS" | awk '{print $1}')
+          EXPECTED_SHA="14fbd2206049e6d48a17791a92c1ddda0ff82a71638f0b9bfdb4107dcc576b90"
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "SHA mismatch! Expected $EXPECTED_SHA but got $ACTUAL_SHA"
+            exit 1
+          fi
+          echo "Rootfs SHA verified: $ACTUAL_SHA"
+
+          echo "=== 6. Mounting raw rootfs and extracting sysroot libraries ==="
+          MOUNT_POINT="/tmp/sysroot_mnt"
+          mkdir -p "$MOUNT_POINT"
+          hdiutil attach "$RAW_ROOTFS" -mountpoint "$MOUNT_POINT" -nobrowse -readonly
+
+          mkdir -p "$SYSROOT_DIR/usr/lib"
+          mkdir -p "$SYSROOT_DIR/System/Library/Frameworks"
+
+          sudo cp -a "$MOUNT_POINT/usr/lib/"* "$SYSROOT_DIR/usr/lib/"
+          sudo cp -a "$MOUNT_POINT/System/Library/Frameworks/"* "$SYSROOT_DIR/System/Library/Frameworks/"
+          sudo chown -R $(id -un):$(id -gn) "$CACHE_ROOT"
+
+          hdiutil detach "$MOUNT_POINT"
+
+          echo "=== 7. Downloading bootstrap debs ==="
+          curl -fL --retry 3 -o "$BOOTSTRAP_DIR/openssh_4.7p1-1_iphoneos-arm.deb" \
+            "https://apt.saurik.com/cydia-3.7/debs/openssh_4.7p1-1_iphoneos-arm.deb"
+          curl -fL --retry 3 -o "$BOOTSTRAP_DIR/openssl_0.9.8g-1_iphoneos-arm.deb" \
+            "https://apt.saurik.com/cydia-3.7/debs/openssl_0.9.8g-1_iphoneos-arm.deb"
+
+      - name: Check toolchain status
+        run: |
+          xcrun --find ld-classic
+          xcrun --find clang
+          ldid || true
+          rustc --version
+          cargo --version
+          bun iphone2g doctor || true
+
+      - name: Compile PocketJS demo app payload
+        run: |
+          bun tools/pocket.ts compile --manifest apps/iphone2g-demo/pocket.json --project-root . --target iphone2g-dev
+
+      - name: Build native PocketJSDemo.app
+        run: |
+          bun iphone2g build --pocket dist/iphone2g-demo-main.pocket
+
+      - name: Verify built Mach-O binary
+        run: |
+          file dist/iphone2g/PocketJSDemo.app/PocketJSDemo
+          xcrun otool-classic -L dist/iphone2g/PocketJSDemo.app/PocketJSDemo
+          plutil -lint dist/iphone2g/PocketJSDemo.app/Info.plist
+          ls -la dist/iphone2g/PocketJSDemo.app
+
+      - name: Create app archive
+        run: |
+          cd dist/iphone2g
+          tar -czvf ../../PocketJSDemo.app.tar.gz PocketJSDemo.app
+
+      - name: Upload PocketJSDemo.app archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketJSDemo.app
+          path: PocketJSDemo.app.tar.gz
+          if-no-files-found: error
