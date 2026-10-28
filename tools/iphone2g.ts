@@ -512,6 +512,7 @@ export function buildIPhone2GNative(application: RuntimeApplication, outdir: str
   compile(join(repository, "engine/guest-quickjs/src/guest.c"), join(build, "pocket_guest_quickjs.o"), [
     ...firstPartyWarnings, "-I", join(repository, "engine/guest-quickjs/include"),
     "-I", join(repository, "contracts/generated"), "-isystem", quickjs,
+    "-DPOCKET_QJS_BELLARD",
   ]);
   const quickJsObjects: string[] = [];
   for (const source of [
