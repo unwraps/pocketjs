@@ -547,6 +547,7 @@ describe("semantic resolution", () => {
       stats: [true, true, false, true],
       "text-offload": [true, false, false, true], // requires a supported companion transport
       "vue-sfc-lab": [true, true, false, true],
+      "zero-tools": [false, false, false, false], // built against programs/cardputer-zero's profile: a fixed 320x170 panel with a keyboard (input.text) and net.http
       zoomlab: [true, true, false, true],
     };
     const targets = ["psp", "vita", "macos-widget", "macos-app"] as const;

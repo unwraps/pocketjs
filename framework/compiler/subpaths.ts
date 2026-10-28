@@ -58,6 +58,7 @@ export const SUBPATHS: Record<string, SubpathDecl> = {
   },
   animation: { file: "framework/src/animation.ts", aliases: TWINS },
   classic: { file: { solid: "framework/src/classic.ts" } },
+  compact: { file: { solid: "framework/src/compact/index.ts" } },
   "offload/provider": { file: "tools/offload-provider.ts" },
   "offload/usb-provider": { file: "tools/offload-usb-provider.ts" },
   "offload/capabilities": { file: "tools/offload-capabilities.ts" },

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://pocketjs.dev/schema/pocket-2.json",
+  "pocket": 2,
+  "id": "dev.pocket-nexus.zero-tools",
+  "name": "pocket-zero-tools",
+  "title": "Pocket Tools",
+  "version": "0.1.0",
+  "engine": {
+    "capabilities": {
+      "requires": ["text.glyphs.baked", "input.buttons", "input.text", "net.http"]
+    }
+  },
+  "app": {
+    "entry": "apps/zero-tools/main.tsx",
+    "output": "zero-tools-main",
+    "framework": "solid",
+    "viewport": {
+      "fixed": {
+        "logical": [320, 170],
+        "presentation": "native"
+      }
+    }
+  }
+}

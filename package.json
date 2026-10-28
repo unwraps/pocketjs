@@ -75,6 +75,7 @@
     ".": "./framework/src/index.ts",
     "./animation": "./framework/src/animation.ts",
     "./classic": "./framework/src/classic.ts",
+    "./compact": "./framework/src/compact/index.ts",
     "./offload/provider": "./tools/offload-provider.ts",
     "./offload/usb-provider": "./tools/offload-usb-provider.ts",
     "./offload/capabilities": "./tools/offload-capabilities.ts",
