@@ -453,6 +453,7 @@ export function buildIPhone2GNative(application: RuntimeApplication, outdir: str
     "-Wextra",
     "-Werror",
     "-Wno-incompatible-sysroot",
+    "-Wno-unknown-warning-option",
   ];
   compile(join(csu, "start.s"), join(build, "csu-start.o"), [
     "-x",
