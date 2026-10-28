@@ -14,7 +14,8 @@
 // install  /usr/bin/pocket-cardputer-zero, /usr/share/pocketjs/zero-tools.pocket,
 //          APPLaunch's entry and icon, and a sudoers rule that lets the gpio
 //          group start the program as root (the sensors, radios and the
-//          infrared port are root's). A Companion entry already installed
+//          infrared port are root's), and a udev rule that gives the CMA heap
+//          the names rpicam-apps opens. A Companion entry already installed
 //          from an older build keeps its binary under
 //          /usr/bin/pocket-cardputer-zero.companion, since its package was
 //          admitted by an earlier profile. APPLaunch restarts to list the entry.
@@ -50,6 +51,11 @@ Terminal=false
 StartupNotify=false
 `;
 const SUDOERS = `%gpio ALL=(root) NOPASSWD: ${BINARY} --package ${PACKAGE_PATH}\n`;
+// rpicam-apps allocates its capture buffers from /dev/dma_heap/linux,cma (or
+// vidbuf_cached); this kernel names its CMA heap default_cma_region, so the
+// camera fails with "dmaHeap allocation failure" until the names exist.
+// udev replaces the comma in a SYMLINK name, so that one is made by a command.
+const UDEV = `SUBSYSTEM=="dma_heap", KERNEL=="default_cma_region", SYMLINK+="dma_heap/vidbuf_cached", RUN+="/bin/ln -sf default_cma_region /dev/dma_heap/linux,cma"\n`;
 
 const argv = process.argv.slice(2);
 const option = (name: string) => {
@@ -100,6 +106,7 @@ async function build(): Promise<void> {
   writeFileSync(join(out, "pocket-zero-tools.png"), drawIcon(100));
   writeFileSync(join(out, "pocket-zero-tools.desktop"), DESKTOP);
   writeFileSync(join(out, "pocket-zero-tools.sudoers"), SUDOERS);
+  writeFileSync(join(out, "99-pocket-dma-heap.rules"), UDEV);
   console.log(`cardputer-zero: ${program}\ncardputer-zero: ${pocket}`);
 }
 
@@ -113,16 +120,20 @@ async function install(host: string): Promise<void> {
   await $`scp -q ${join(out, "pocket-zero-tools.png")} ${host}:${images}/pocket-zero-tools.png`;
   await $`scp -q ${join(out, "pocket-zero-tools.desktop")} ${host}:${entries}/pocket-zero-tools.desktop`;
   await $`scp -q ${join(out, "pocket-zero-tools.sudoers")} ${host}:/tmp/pocket-zero-tools.sudoers`;
+  await $`scp -q ${join(out, "99-pocket-dma-heap.rules")} ${host}:/etc/udev/rules.d/99-pocket-dma-heap.rules`;
   await $`ssh ${host} ${[
     "set -e",
     // A Companion screen installed by an earlier build was admitted by that
-    // build's profile: it keeps that binary under another name.
-    `if [ -f ${entries}/pocket-companion.desktop ] && [ -x ${BINARY} ] && ! cmp -s ${BINARY} ${BINARY}.new; then cp -p ${BINARY} ${BINARY}.companion; sed -i 's#-- ${BINARY}$#-- ${BINARY}.companion#' ${entries}/pocket-companion.desktop; if [ -f /etc/sudoers.d/pocket-companion ]; then sed -i 's#${BINARY} ""#${BINARY}.companion ""#' /etc/sudoers.d/pocket-companion; fi; fi`,
+    // build's profile: the first install here keeps that binary under
+    // another name and points the entry at it. A later install leaves the
+    // kept binary alone.
+    `if [ -f ${entries}/pocket-companion.desktop ] && grep -q -- '-- ${BINARY}$' ${entries}/pocket-companion.desktop && [ -x ${BINARY} ]; then cp -p ${BINARY} ${BINARY}.companion; sed -i 's#-- ${BINARY}$#-- ${BINARY}.companion#' ${entries}/pocket-companion.desktop; if [ -f /etc/sudoers.d/pocket-companion ]; then sed -i 's#${BINARY} ""#${BINARY}.companion ""#' /etc/sudoers.d/pocket-companion; fi; fi`,
     `mv ${BINARY}.new ${BINARY}`,
     `chmod 755 ${BINARY}`,
     "visudo -cf /tmp/pocket-zero-tools.sudoers",
     "install -m 440 /tmp/pocket-zero-tools.sudoers /etc/sudoers.d/pocket-zero-tools",
     "rm /tmp/pocket-zero-tools.sudoers",
+    "udevadm control --reload && udevadm trigger --subsystem-match=dma_heap",
     `${BINARY} --check --package ${PACKAGE_PATH}`,
     "systemctl --user -M pi@ restart APPLaunch.service",
   ].join(" && ")}`;

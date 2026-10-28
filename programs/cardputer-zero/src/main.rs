@@ -44,7 +44,8 @@ const PACKAGE_LIMIT: usize = 16 * 1024 * 1024;
 const DEFAULT_PACKAGE: &str = "/usr/share/pocketjs/companion.pocket";
 const DEFAULT_CONTROL: &str = "/opt/pocket/store/control.json";
 const DEFAULT_STORE: &str = "/opt/pocket/zero";
-const DEFAULT_AUDIO_DEVICE: &str = "default";
+/// `auto` picks the codec card by name (device/linux.rs `pcm_device`).
+const DEFAULT_AUDIO_DEVICE: &str = "auto";
 
 static STOP: AtomicBool = AtomicBool::new(false);
 extern "C" fn stop(_: libc::c_int) {
@@ -185,9 +186,10 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             None
         }
     };
-    // The device layer runs when the program has the hardware or stands in
-    // for it; a shot without --mock keeps the API absent.
-    let device = if options.mock || !headless {
+    // The device layer runs when the program has the hardware (a Linux
+    // machine, with or without the panel) or stands in for it with --mock;
+    // a shot elsewhere keeps the API absent.
+    let device = if options.mock || !headless || cfg!(target_os = "linux") {
         Some(device::Device::new(
             options.store.unwrap_or_else(|| DEFAULT_STORE.into()),
             options.mock,
@@ -199,7 +201,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let net: net::Net = Rc::new(RefCell::new(NetCore::new(net::LocalHttp::new(
         options.control.unwrap_or_else(|| DEFAULT_CONTROL.into()),
         options.unit.unwrap_or_else(|| net::COMPANION_UNIT.into()),
-        device,
+        device.clone(),
     ))));
     runtime
         .set_package_source(Box::new(source))
@@ -230,6 +232,9 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         }
     }
     runtime.shutdown().map_err(error)?;
+    if let Some(device) = device {
+        device.stop();
+    }
     Ok(())
 }
 

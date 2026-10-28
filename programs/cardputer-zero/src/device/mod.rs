@@ -122,6 +122,10 @@ struct Audio {
     playing: Option<String>,
     error: Option<String>,
     blocks: u64,
+    /// The `arecord` child while it runs, so `stop` can end it.
+    capture_pid: Option<u32>,
+    /// The mixer values the capture raised, until they are put back.
+    gain_previous: Vec<(String, i64)>,
 }
 
 impl Default for Audio {
@@ -139,6 +143,8 @@ impl Default for Audio {
             playing: None,
             error: None,
             blocks: 0,
+            capture_pid: None,
+            gain_previous: Vec::new(),
         }
     }
 }
@@ -286,6 +292,18 @@ fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 64 && !name.contains('/') && !name.contains("..") && !name.starts_with('.')
 }
 
+/// The PCM the microphone and speaker use, as the applet shows it.
+fn audio_device_name(configured: &str) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        linux::pcm_device(configured)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        configured.to_string()
+    }
+}
+
 /// A 16-bit mono WAV header for `data_bytes` of samples.
 fn wav_header(data_bytes: u32) -> [u8; 44] {
     let mut h = [0u8; 44];
@@ -343,6 +361,40 @@ impl Device {
 
     fn t(&self) -> f64 {
         self.0.started.elapsed().as_secs_f64()
+    }
+
+    /// Put the microphone preamplifier back as the capture found it.
+    fn restore_gain(&self) {
+        let previous = std::mem::take(&mut self.lock().audio.gain_previous);
+        #[cfg(target_os = "linux")]
+        if !previous.is_empty() {
+            linux::capture_gain_restore(&previous);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = previous;
+    }
+
+    /// End what outlives a frame: the microphone capture, its child and the
+    /// preamplifier it raised. Called once when the program leaves; a child
+    /// left running would hold the codec after the panel went back to the
+    /// launcher.
+    pub fn stop(&self) {
+        let pid = {
+            let mut state = self.lock();
+            state.audio.capturing = false;
+            state.audio.record_wanted = false;
+            state.ir.learning = false;
+            state.audio.capture_pid.take()
+        };
+        #[cfg(target_os = "linux")]
+        if let Some(pid) = pid {
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = pid;
+        self.restore_gain();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -715,9 +767,15 @@ impl Device {
         let mut stdout: Option<std::process::ChildStdout> = None;
         if !self.0.mock {
             #[cfg(target_os = "linux")]
+            {
+                let previous = linux::capture_gain_up();
+                self.lock().audio.gain_previous = previous;
+            }
+            #[cfg(target_os = "linux")]
             match linux::spawn_capture(&self.0.audio_device) {
                 Ok(mut spawned) => {
                     stdout = spawned.stdout.take();
+                    self.lock().audio.capture_pid = Some(spawned.id());
                     child = Some(spawned);
                 }
                 Err(error) => {
@@ -814,9 +872,11 @@ impl Device {
             let _ = process.kill();
             let _ = process.wait();
         }
+        self.restore_gain();
         let mut state = self.lock();
         state.audio.capturing = false;
         state.audio.record_wanted = false;
+        state.audio.capture_pid = None;
         state.audio.level_db = dsp::FLOOR_DB;
         state.audio.peak_db = dsp::FLOOR_DB;
         state.audio.pitch_hz = None;
@@ -854,7 +914,7 @@ impl Device {
                 thread::sleep(Duration::from_secs_f32(seconds.min(30.0)));
             } else {
                 #[cfg(target_os = "linux")]
-                match linux::play(&path) {
+                match linux::play(&device.0.audio_device, &path) {
                     Ok(mut child) => {
                         let _ = child.wait();
                     }
@@ -1241,7 +1301,7 @@ impl Device {
             "recordings": a.recordings.iter().map(|(name, seconds, bytes)| json!({ "name": name, "seconds": round(*seconds, 1), "bytes": bytes })).collect::<Vec<_>>(),
             "playing": a.playing,
             "error": a.error,
-            "device": self.0.audio_device,
+            "device": if self.0.mock { self.0.audio_device.clone() } else { audio_device_name(&self.0.audio_device) },
         })
     }
 

@@ -279,6 +279,8 @@ pub fn ble_scan(seconds: u32) -> Result<Vec<BleDevice>, String> {
     if tool("bluetoothctl").is_none() {
         return Err("bluetoothctl is not installed".into());
     }
+    // The Zero boots with the adapter off.
+    let _ = run("bluetoothctl", &["power", "on"], Duration::from_secs(5));
     let timeout = seconds.to_string();
     let text = run("bluetoothctl", &["--timeout", &timeout, "scan", "on"], Duration::from_secs(seconds as u64 + 5))?;
     let mut devices: Vec<BleDevice> = Vec::new();
@@ -350,12 +352,52 @@ pub fn set_backlight(value: u32) -> Result<(), String> {
     fs::write(dir.join("brightness"), value.min(max).to_string()).map_err(|e| e.to_string())
 }
 
-const MIXERS: [&str; 4] = ["Master", "Speaker", "PCM", "Headphone"];
+const MIXERS: [&str; 4] = ["Speaker", "Master", "PCM", "Headphone"];
+
+/// The codec's ALSA card by name (`/proc/asound/cards`): the Zero's ES8389
+/// is card 1 behind the HDMI card, and `default` has no capture slave, so
+/// the microphone and the speaker are addressed by card name.
+pub fn audio_card() -> Option<String> {
+    let text = fs::read_to_string("/proc/asound/cards").ok()?;
+    let mut cards: Vec<String> = text
+        .lines()
+        .filter_map(|line| {
+            let open = line.find('[')?;
+            let close = line[open..].find(']')? + open;
+            Some(line[open + 1..close].trim().to_string())
+        })
+        .filter(|name| !name.is_empty())
+        .collect();
+    cards.sort_by_key(|name| if name.to_ascii_lowercase().contains("hdmi") { 1 } else { 0 });
+    cards.into_iter().next()
+}
+
+/// The PCM device of a configured name, or the codec card's first device.
+pub fn pcm_device(configured: &str) -> String {
+    if configured != "auto" {
+        return configured.to_string();
+    }
+    match audio_card() {
+        Some(card) => format!("plughw:CARD={card},DEV=0"),
+        None => "default".into(),
+    }
+}
+
+fn mixer_args<'a>(card: &'a Option<String>, rest: &[&'a str]) -> Vec<&'a str> {
+    let mut args: Vec<&str> = Vec::new();
+    if let Some(name) = card {
+        args.push("-c");
+        args.push(name.as_str());
+    }
+    args.extend_from_slice(rest);
+    args
+}
 
 pub fn volume() -> Option<u8> {
     tool("amixer")?;
+    let card = audio_card();
     for mixer in MIXERS {
-        if let Ok(text) = run("amixer", &["sget", mixer], Duration::from_secs(2)) {
+        if let Ok(text) = run("amixer", &mixer_args(&card, &["sget", mixer]), Duration::from_secs(2)) {
             if let Some(percent) = text.split('[').skip(1).find_map(|part| part.split('%').next().and_then(|v| v.parse::<u8>().ok())) {
                 return Some(percent);
             }
@@ -366,9 +408,10 @@ pub fn volume() -> Option<u8> {
 
 pub fn set_volume(value: u8) -> Result<(), String> {
     tool("amixer").ok_or("amixer is not installed")?;
+    let card = audio_card();
     let level = format!("{}%", value.min(100));
     for mixer in MIXERS {
-        if run("amixer", &["sset", mixer, &level], Duration::from_secs(2)).is_ok() {
+        if run("amixer", &mixer_args(&card, &["sset", mixer, &level]), Duration::from_secs(2)).is_ok() {
             return Ok(());
         }
     }
@@ -377,11 +420,57 @@ pub fn set_volume(value: u8) -> Result<(), String> {
 
 // ---- audio -------------------------------------------------------------------
 
+const PGA_CONTROLS: [&str; 2] = ["ADCL PGA Volume", "ADCR PGA Volume"];
+
+/// Read one integer mixer control by name.
+fn mixer_value(card: &Option<String>, name: &str) -> Option<i64> {
+    let selector = format!("name={name}");
+    let text = run("amixer", &mixer_args(card, &["cget", &selector]), Duration::from_secs(2)).ok()?;
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix(": values="))
+        .and_then(|values| values.split(',').next())
+        .and_then(|value| value.trim().parse().ok())
+}
+
+fn set_mixer_value(card: &Option<String>, name: &str, value: i64) -> bool {
+    let selector = format!("name={name}");
+    let text = value.to_string();
+    run("amixer", &mixer_args(card, &["cset", &selector, &text]), Duration::from_secs(2)).is_ok()
+}
+
+/// Set the microphone preamplifier to its maximum while a tool listens, and
+/// hand back what it was. **The ES8389's PGA at the vendor's 8 of 14 leaves
+/// a quiet room at about -71 dBFS; at 14 it reads about -53 dBFS**, which
+/// the meters, the tuner and the recorder can work with.
+pub fn capture_gain_up() -> Vec<(String, i64)> {
+    if tool("amixer").is_none() {
+        return Vec::new();
+    }
+    let card = audio_card();
+    let mut previous = Vec::new();
+    for name in PGA_CONTROLS {
+        if let Some(value) = mixer_value(&card, name) {
+            previous.push((name.to_string(), value));
+            set_mixer_value(&card, name, 14);
+        }
+    }
+    previous
+}
+
+/// Put the preamplifier back as `capture_gain_up` found it.
+pub fn capture_gain_restore(previous: &[(String, i64)]) {
+    let card = audio_card();
+    for (name, value) in previous {
+        set_mixer_value(&card, name, *value);
+    }
+}
+
 /// Start `arecord` as a raw 16 kHz mono S16LE stream on its stdout.
 pub fn spawn_capture(device: &str) -> Result<std::process::Child, String> {
     tool("arecord").ok_or("arecord is not installed")?;
+    let pcm = pcm_device(device);
     Command::new("arecord")
-        .args(["-q", "-D", device, "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "raw"])
+        .args(["-q", "-D", &pcm, "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "raw"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -389,10 +478,11 @@ pub fn spawn_capture(device: &str) -> Result<std::process::Child, String> {
         .map_err(|error| format!("arecord: {error}"))
 }
 
-pub fn play(path: &Path) -> Result<std::process::Child, String> {
+pub fn play(device: &str, path: &Path) -> Result<std::process::Child, String> {
     tool("aplay").ok_or("aplay is not installed")?;
+    let pcm = pcm_device(device);
     Command::new("aplay")
-        .arg("-q")
+        .args(["-q", "-D", &pcm])
         .arg(path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -407,17 +497,17 @@ pub fn camera_tool() -> Option<PathBuf> {
     tool("rpicam-still").or_else(|| tool("libcamera-still"))
 }
 
-/// Take one 640x360 JPEG. The sensor's power enable is GPIO 18 (low =
-/// on), set through `pinctrl` when it is present.
+/// Take one 640x360 JPEG after 1.5 s of exposure and white balance settling
+/// (`--immediate` captures the sensor's first frame, which is near black
+/// indoors). The sensor is powered by the device tree (`dtoverlay=imx219`);
+/// BCM GPIO 18 is the codec's I2S clock, not a camera enable, so nothing
+/// here touches pins.
 pub fn capture_jpeg(tool_path: &Path, output: &Path) -> Result<(), String> {
-    if tool("pinctrl").is_some() {
-        let _ = run("pinctrl", &["set", "18", "op", "dl"], Duration::from_secs(2));
-    }
     let output_text = output.to_string_lossy().to_string();
     let result = run(
         &tool_path.to_string_lossy(),
-        &["-n", "--immediate", "-t", "1", "--width", "640", "--height", "360", "-e", "jpg", "-o", &output_text],
-        Duration::from_secs(15),
+        &["-n", "-t", "1500", "--width", "640", "--height", "360", "-e", "jpg", "-o", &output_text],
+        Duration::from_secs(20),
     );
     match result {
         Ok(_) if output.exists() => Ok(()),
