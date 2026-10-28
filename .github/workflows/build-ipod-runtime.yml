@@ -26,7 +26,7 @@ jobs:
 
       - name: Install macOS host tools
         run: |
-          brew install ldid openssl@3 pkg-config
+          brew install ldid
 
       - name: Install Rust nightly toolchain
         run: |
@@ -47,18 +47,17 @@ jobs:
           SYSROOT_DIR="$SYSROOT_RAW_DIR/rootfs"
           DOWNLOADS_DIR="$CACHE_ROOT/downloads"
           BOOTSTRAP_DIR="$DOWNLOADS_DIR/bootstrap"
+          LEGACY_KIT_DIR="$CACHE_ROOT/sources/Legacy-iOS-Kit-1e982b7f2a27ff0f77fe138b9bd48bd7cf431ca6"
 
           mkdir -p "$SYSROOT_RAW_DIR" "$SYSROOT_DIR" "$BOOTSTRAP_DIR"
 
-          echo "=== 1. Building vfdecrypt ==="
-          git clone --depth 1 https://github.com/malus-security/vfdecrypt.git /tmp/vfdecrypt-src
-          OPENSSL_PREFIX=$(brew --prefix openssl@3)
-          clang -O2 -DMAC_OSX \
-            -I"$OPENSSL_PREFIX/include" \
-            -L"$OPENSSL_PREFIX/lib" \
-            /tmp/vfdecrypt-src/vfdecrypt.c \
-            -lcrypto -lssl \
-            -o /tmp/vfdecrypt
+          echo "=== 1. Finding Legacy-iOS-Kit dmg tool ==="
+          DMG_TOOL="$LEGACY_KIT_DIR/bin/macos/arm64/dmg"
+          if [ ! -f "$DMG_TOOL" ]; then
+            DMG_TOOL="$LEGACY_KIT_DIR/bin/macos/dmg"
+          fi
+          chmod +x "$DMG_TOOL"
+          export DYLD_LIBRARY_PATH="$LEGACY_KIT_DIR/bin/macos/arm64/lib:$LEGACY_KIT_DIR/bin/macos/lib:${DYLD_LIBRARY_PATH:-}"
 
           echo "=== 2. Downloading iPhone OS 1.1.4 IPSW ==="
           IPSW_PATH="$DOWNLOADS_DIR/iPhone1,1_1.1.4_4A102_Restore.ipsw"
@@ -70,21 +69,22 @@ jobs:
           echo "=== 3. Extracting 022-3894-4.dmg ==="
           unzip -p "$IPSW_PATH" "022-3894-4.dmg" > /tmp/022-3894-4.dmg
 
-          echo "=== 4. Decrypting rootfs ==="
+          echo "=== 4. Decrypting and extracting raw rootfs with xpwn dmg ==="
           RAW_ROOTFS="$SYSROOT_RAW_DIR/iPhoneOS-1.1.4-rootfs.raw"
-          /tmp/vfdecrypt -i /tmp/022-3894-4.dmg \
-            -k d0a0c0977bd4b6350b256d6650ec9eca419b6f961f593e74b7e5b93e010b698ca6cca1fe \
-            -o "$RAW_ROOTFS"
+          "$DMG_TOOL" extract /tmp/022-3894-4.dmg "$RAW_ROOTFS" \
+            -k d0a0c0977bd4b6350b256d6650ec9eca419b6f961f593e74b7e5b93e010b698ca6cca1fe
           rm -f /tmp/022-3894-4.dmg
 
           echo "=== 5. Verifying raw rootfs SHA-256 ==="
           ACTUAL_SHA=$(shasum -a 256 "$RAW_ROOTFS" | awk '{print $1}')
           EXPECTED_SHA="14fbd2206049e6d48a17791a92c1ddda0ff82a71638f0b9bfdb4107dcc576b90"
+          echo "Actual:   $ACTUAL_SHA"
+          echo "Expected: $EXPECTED_SHA"
           if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
             echo "SHA mismatch! Expected $EXPECTED_SHA but got $ACTUAL_SHA"
             exit 1
           fi
-          echo "Rootfs SHA verified: $ACTUAL_SHA"
+          echo "Rootfs SHA verified successfully!"
 
           echo "=== 6. Mounting raw rootfs and extracting sysroot libraries ==="
           MOUNT_POINT="/tmp/sysroot_mnt"
