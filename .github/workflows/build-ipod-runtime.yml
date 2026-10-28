@@ -51,12 +51,16 @@ jobs:
 
           mkdir -p "$SYSROOT_RAW_DIR" "$SYSROOT_DIR" "$BOOTSTRAP_DIR"
 
-          echo "=== 1. Finding Legacy-iOS-Kit dmg tool ==="
+          echo "=== 1. Finding Legacy-iOS-Kit tools ==="
           DMG_TOOL="$LEGACY_KIT_DIR/bin/macos/arm64/dmg"
           if [ ! -f "$DMG_TOOL" ]; then
             DMG_TOOL="$LEGACY_KIT_DIR/bin/macos/dmg"
           fi
-          chmod +x "$DMG_TOOL"
+          HFSPLUS_TOOL="$LEGACY_KIT_DIR/bin/macos/arm64/hfsplus"
+          if [ ! -f "$HFSPLUS_TOOL" ]; then
+            HFSPLUS_TOOL="$LEGACY_KIT_DIR/bin/macos/hfsplus"
+          fi
+          chmod +x "$DMG_TOOL" "$HFSPLUS_TOOL"
           export DYLD_LIBRARY_PATH="$LEGACY_KIT_DIR/bin/macos/arm64/lib:$LEGACY_KIT_DIR/bin/macos/lib:${DYLD_LIBRARY_PATH:-}"
 
           echo "=== 2. Downloading iPhone OS 1.1.4 IPSW ==="
@@ -86,19 +90,32 @@ jobs:
           fi
           echo "Rootfs SHA verified successfully!"
 
-          echo "=== 6. Mounting raw rootfs and extracting sysroot libraries ==="
-          MOUNT_POINT="/tmp/sysroot_mnt"
-          mkdir -p "$MOUNT_POINT"
-          hdiutil attach "$RAW_ROOTFS" -mountpoint "$MOUNT_POINT" -nobrowse -readonly
-
+          echo "=== 6. Extracting sysroot libraries using hfsplus ==="
           mkdir -p "$SYSROOT_DIR/usr/lib"
-          mkdir -p "$SYSROOT_DIR/System/Library/Frameworks"
+          mkdir -p "$SYSROOT_DIR/System/Library/Frameworks/UIKit.framework"
+          mkdir -p "$SYSROOT_DIR/System/Library/Frameworks/Foundation.framework"
+          mkdir -p "$SYSROOT_DIR/System/Library/Frameworks/CoreGraphics.framework"
+          mkdir -p "$SYSROOT_DIR/System/Library/Frameworks/OpenGLES.framework"
 
-          sudo cp -a "$MOUNT_POINT/usr/lib/"* "$SYSROOT_DIR/usr/lib/"
-          sudo cp -a "$MOUNT_POINT/System/Library/Frameworks/"* "$SYSROOT_DIR/System/Library/Frameworks/"
-          sudo chown -R $(id -un):$(id -gn) "$CACHE_ROOT"
+          (cd "$SYSROOT_DIR/usr/lib" && \
+            "$HFSPLUS_TOOL" "$RAW_ROOTFS" extract usr/lib/libSystem.B.dylib && \
+            "$HFSPLUS_TOOL" "$RAW_ROOTFS" extract usr/lib/libgcc_s.1.dylib && \
+            "$HFSPLUS_TOOL" "$RAW_ROOTFS" extract usr/lib/libobjc.A.dylib && \
+            ln -sf libSystem.B.dylib libSystem.dylib && \
+            ln -sf libobjc.A.dylib libobjc.dylib && \
+            ln -sf libgcc_s.1.dylib libgcc_s.dylib)
 
-          hdiutil detach "$MOUNT_POINT"
+          (cd "$SYSROOT_DIR/System/Library/Frameworks/UIKit.framework" && \
+            "$HFSPLUS_TOOL" "$RAW_ROOTFS" extract System/Library/Frameworks/UIKit.framework/UIKit)
+
+          (cd "$SYSROOT_DIR/System/Library/Frameworks/Foundation.framework" && \
+            "$HFSPLUS_TOOL" "$RAW_ROOTFS" extract System/Library/Frameworks/Foundation.framework/Foundation)
+
+          (cd "$SYSROOT_DIR/System/Library/Frameworks/CoreGraphics.framework" && \
+            "$HFSPLUS_TOOL" "$RAW_ROOTFS" extract System/Library/Frameworks/CoreGraphics.framework/CoreGraphics)
+
+          (cd "$SYSROOT_DIR/System/Library/Frameworks/OpenGLES.framework" && \
+            "$HFSPLUS_TOOL" "$RAW_ROOTFS" extract System/Library/Frameworks/OpenGLES.framework/OpenGLES)
 
           echo "=== 7. Downloading bootstrap debs ==="
           curl -fL --retry 3 -o "$BOOTSTRAP_DIR/openssh_4.7p1-1_iphoneos-arm.deb" \
